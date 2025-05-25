@@ -9,6 +9,9 @@ on:
       - main # Esegui questo workflow quando si apre una PR su 'main'
     types: [opened, synchronize, reopened] # Per attivare su apertura, aggiornamento o riapertura PR
 
+permissions:
+  contents: write # Questo darà al GITHUB_TOKEN i permessi di scrittura sui contenuti del repository, inclusi release e tag.
+
 jobs:
   build_and_release:
     runs-on: ubuntu-latest # Useremo un runner Linux per il build Android
