@@ -1,4 +1,4 @@
-name: Flutter CI/APK Release with Auto-Increment (No Tests)
+name: Flutter CI/APK Release
 
 on:
   push:
@@ -11,25 +11,21 @@ on:
 
 jobs:
   build_and_release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Useremo un runner Linux per il build Android
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          # Questo è importante per creare tag e release!
+          # Richiede un token con permessi di scrittura sui contenuti del repository.
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Git for Commit
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
-          #flutter-version: '3.19.6' # Sostituisci con la versione specifica di Flutter che usi
-          channel: stable
+          #flutter-version: '3.19.6' # Sostituisci con la versione specifica di Flutter che usi (es. 3.19.6, 3.22.0, etc.)
+          channel: stable # o beta/master se usi un canale diverso
 
       - name: Get Dependencies
         run: flutter pub get
@@ -37,48 +33,46 @@ jobs:
       - name: Analyze Code
         run: flutter analyze
 
-      - name: Increment App Version (Build Number)
-        id: increment_version
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Run Tests
+        run: flutter test
+
+      - name: Get App Version
+        id: get_version
         run: |
-          CURRENT_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
-          echo "Current version from pubspec.yaml: $CURRENT_VERSION"
+          # Estrai la versione dal pubspec.yaml
+          # Esempio: version: 1.0.0+1
+          # Otteniamo "1.0.0" come APP_VERSION e "1" come BUILD_NUMBER (se presente)
+          VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          APP_VERSION=$(echo $VERSION | cut -d'+' -f1)
+          BUILD_NUMBER=$(echo $VERSION | cut -d'+' -f2)
 
-          APP_VERSION=$(echo $CURRENT_VERSION | cut -d'+' -f1)
-
-          CURRENT_BUILD_NUMBER=$(echo $CURRENT_VERSION | cut -d'+' -f2)
-          if [ -z "$CURRENT_BUILD_NUMBER" ]; then
-            INCREMENTED_BUILD_NUMBER="1"
-          else
-            INCREMENTED_BUILD_NUMBER=$((CURRENT_BUILD_NUMBER + 1))
+          if [ -z "$BUILD_NUMBER" ]; then
+            BUILD_NUMBER="0" # Valore di default se non c'è build number
           fi
 
-          NEW_VERSION="${APP_VERSION}+${INCREMENTED_BUILD_NUMBER}"
-          echo "New version to be set: $NEW_VERSION"
+          # Incrementa automaticamente il BUILD_NUMBER per il tag e la release
+          # Ogni volta che questo workflow viene eseguito sul branch main, il build_number aumenterà
+          # Questo implica che il pubspec.yaml *non* rifletterà questo incremento
+          # Se vuoi che il pubspec.yaml rifletta l'incremento, avresti bisogno di un'azione
+          # che modifichi il file, ma questo complica un po' le cose.
+          # Per una release esterna, è più pratico aggiornare manualmente la versione nel pubspec.yaml
+          # prima del push finale, o usare un approccio più sofisticato per la gestione delle versioni.
 
-          sed -i "s/^version: .*/version: $NEW_VERSION/" pubspec.yaml
-
-          cat pubspec.yaml | grep version:
-
+          # Per ora, usiamo la versione dal pubspec.yaml
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
-          echo "INCREMENTED_BUILD_NUMBER=$INCREMENTED_BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Commit Version Changes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git add pubspec.yaml
-          git diff --cached --exit-code || git commit -m "chore(release): Increment build number to ${{ steps.increment_version.outputs.INCREMENTED_BUILD_NUMBER }} [skip ci]"
-          git push
-
       - name: Build Android Release APK
+        # Questo step viene eseguito solo quando si fa un push sul branch 'main'
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           flutter build apk --release \
-            --build-name=${{ steps.increment_version.outputs.APP_VERSION }} \
-            --build-number=${{ steps.increment_version.outputs.INCREMENTED_BUILD_NUMBER }}
+            --build-name=${{ steps.get_version.outputs.APP_VERSION }} \
+            --build-number=${{ steps.get_version.outputs.BUILD_NUMBER }}
 
       - name: Upload Android APK as Artifact
+        # Questo step viene eseguito solo quando si fa un push sul branch 'main'
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
@@ -86,20 +80,22 @@ jobs:
           path: build/app/outputs/flutter-apk/app-release.apk
 
       - name: Create Git Tag and GitHub Release
+        # Questo step viene eseguito solo quando si fa un push sul branch 'main'
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.increment_version.outputs.APP_VERSION }}+${{ steps.increment_version.outputs.INCREMENTED_BUILD_NUMBER }}
-          name: Release v${{ steps.increment_version.outputs.APP_VERSION }} (Build ${{ steps.increment_version.outputs.INCREMENTED_BUILD_NUMBER }})
+          # Il tag sarà v<versione_app> (es. v1.0.0)
+          tag_name: v${{ steps.get_version.outputs.APP_VERSION }}+${{ steps.get_version.outputs.BUILD_NUMBER }}
+          name: Release v${{ steps.get_version.outputs.APP_VERSION }} (${{ steps.get_version.outputs.BUILD_NUMBER }})
           body: |
             Nuova release della nostra app!
 
-            Versione: ${{ steps.increment_version.outputs.APP_VERSION }}
-            Build: ${{ steps.increment_version.outputs.INCREMENTED_BUILD_NUMBER }}
+            Versione: ${{ steps.get_version.outputs.APP_VERSION }}
+            Build: ${{ steps.get_version.outputs.BUILD_NUMBER }}
 
             Download l'APK qui sotto.
-          draft: false
-          prerelease: false
-          files: build/app/outputs/flutter-apk/app-release.apk
+          draft: false # Metti a true se vuoi che la release sia una bozza all'inizio
+          prerelease: false # Metti a true se è una pre-release (es. beta)
+          files: build/app/outputs/flutter-apk/app-release.apk # Allega l'APK alla release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Necessario per creare la release
